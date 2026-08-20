@@ -4,26 +4,40 @@
 
 # --- J-Link unpack stage -----------------------------------------------------
 # Runs on the BUILD platform, never emulated. GNU tar fails with ENOSYS on
-# symlink/mkdir when running under amd64 emulation on an arm64 host, so the
-# tarball is unpacked natively here and the result copied into the final image.
+# symlink/mkdir under amd64 emulation on an arm64 host (Rosetta), so the tarball
+# is unpacked natively here and the result copied into the final image.
 #
-# jlink/amd64/ and jlink/arm64/ each hold SEGGER tarballs for that architecture.
-# To bump: drop JLink_Linux_<ver>_x86_64.tgz and JLink_Linux_<ver>_arm64.tgz in the
-# matching directories and change JLINK_VERSION (or pass --build-arg JLINK_VERSION=...).
+# Fetched from SEGGER rather than vendored, which keeps ~260 MB of binaries out
+# of the repo and the build context. The POST body is SEGGER's license-acceptance
+# form; without it the download returns an HTML page instead of the tarball.
+# Bump with --build-arg JLINK_VERSION=Vxyz (SEGGER retires old versions
+# eventually, so a 404 here means the pinned version is gone).
 FROM --platform=$BUILDPLATFORM ubuntu:latest AS jlink
 ARG TARGETARCH
 ARG JLINK_VERSION=V970
-COPY jlink/${TARGETARCH}/JLink_Linux_${JLINK_VERSION}_*.tgz /tmp/jlink/
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    wget ca-certificates file \
+    && rm -rf /var/lib/apt/lists/*
 RUN set -eux; \
+    case "${TARGETARCH}" in \
+        amd64) JLINK_ARCH=x86_64 ;; \
+        arm64) JLINK_ARCH=arm64 ;; \
+        *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    NAME="JLink_Linux_${JLINK_VERSION}_${JLINK_ARCH}"; \
+    cd /tmp; \
+    wget --retry-connrefused --waitretry=1 --read-timeout=20 --timeout=15 -t 3 \
+        --post-data 'accept_license_agreement=accepted&non_emb_ctr=confirmed&submit=Download+software' \
+        -O "${NAME}.tgz" "https://www.segger.com/downloads/jlink/${NAME}.tgz"; \
+    # A rejected licence POST yields HTML, which tar would fail on confusingly.
+    case "$(file -b --mime-type "${NAME}.tgz")" in \
+        application/gzip|application/x-gzip) ;; \
+        *) echo "Download was not a gzip archive - SEGGER may have retired ${JLINK_VERSION}" >&2; exit 1 ;; \
+    esac; \
+    tar -xzf "${NAME}.tgz"; \
     mkdir -p /opt/SEGGER/JLink; \
-    cd /tmp/jlink; \
-    TARBALL="$(ls -1 JLink_Linux_*.tgz 2>/dev/null | head -1 || true)"; \
-    if [ -z "${TARBALL}" ]; then \
-        echo "No J-Link tarball for ${TARGETARCH} in jlink/${TARGETARCH}/ - skipping J-Link install" >&2; \
-    else \
-        tar -xzf "${TARBALL}"; \
-        cp -a "$(basename "${TARBALL}" .tgz)"/. /opt/SEGGER/JLink/; \
-    fi
+    cp -a "${NAME}"/. /opt/SEGGER/JLink/; \
+    rm -rf "${NAME}.tgz" "${NAME}"
 # -----------------------------------------------------------------------------
 
 FROM ubuntu:latest

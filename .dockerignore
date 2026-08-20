@@ -1,0 +1,7 @@
+.git
+.github
+jlink
+hardware.html
+*.md
+build_docker*.sh
+.DS_Store
