@@ -74,6 +74,8 @@ RUN apt-get update && apt-get install -y \
     unzip \
     zsh \
     gdb-multiarch \
+    # SDL2 for native_sim display/input emulation
+    libsdl2-dev \
     # Python and pip
     python3 \
     python3-pip \
@@ -148,13 +150,22 @@ RUN set -eux; \
 
 # Install specific toolchains (install arm toolchain separately for better reliability)
 RUN cd ~/zephyr-sdk && \
-    ./setup.sh -t arm-zephyr-eabi
+    ./setup.sh -t arm-zephyr-eabi && \
+    # Only the ARM toolchain is used; drop the host-tools installer (0.17.x)
+    # and bundled host tools (1.0.x) - QEMU/OpenOCD aren't used from the SDK.
+    rm -rf zephyr-sdk-*-hosttools-standalone-*.sh hosttools
 
 # Create Virtual Environmenet for compatiblity with current setup
+# Shallow clones throughout: full git history was ~1.5 GB of the image. Each
+# image is pinned to one Zephyr version, so the history isn't needed here.
 RUN python3 -m venv ~/zephyrproject/.venv && . ~/zephyrproject/.venv/bin/activate && pip install west \
-    && west init -m https://github.com/zephyrproject-rtos/zephyr --mr ${ZEPHYR_VERSION} zephyrproject && \
+    && west init -m https://github.com/zephyrproject-rtos/zephyr --mr ${ZEPHYR_VERSION} \
+        --clone-opt=--depth=1 zephyrproject && \
     cd zephyrproject && \
-    for i in 1 2 3; do west update --fetch-opt=--filter=blob:none && break || (echo "west update attempt $i failed, retrying in 15s..." && sleep 15); done && \
+    # Vendor HALs are most of the image (~4 GB); fetch only our MCU HALs (nordic,
+    # stm32) plus the MCU-independent sensor driver libraries (st, tdk, wurth).
+    west config manifest.project-filter -- '-hal_.*,+hal_nordic,+hal_stm32,+hal_st,+hal_tdk,+hal_wurthelektronik' && \
+    for i in 1 2 3; do west update --narrow --fetch-opt=--depth=1 && break || (echo "west update attempt $i failed, retrying in 15s..." && sleep 15); done && \
     west zephyr-export
 
 # Install dependencies in venv
